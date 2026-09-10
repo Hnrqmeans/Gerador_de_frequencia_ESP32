@@ -19,6 +19,8 @@ private:
     void applyHardwarePwm();
     void applySlowPwm();
     void updateSlowPwm();
+    void updateLedIndicator();
+    void resetLedIndicator();
     uint8_t selectResolution() const;
     void writeSlowOutput(uint8_t level);
 
@@ -30,4 +32,7 @@ private:
     bool ledcAttached_ = false;
     uint8_t slowOutputState_ = LOW;
     uint32_t slowCycleStartMs_ = 0;
+    uint32_t ledCycleStartMs_ = 0;
+    uint8_t ledOutputState_ = LOW;
+    bool initialized_ = false;
 };
