@@ -17,41 +17,109 @@ D10        -> duty cycle de 10%
 
 namespace
 {
-  constexpr uint32_t MinFrequency = 1;
-  constexpr uint32_t MaxFrequency = 150000;
-  constexpr uint8_t PwmResolution = 8;
-  constexpr uint16_t MaxDuty = (1 << PwmResolution) - 1;
+  constexpr double MinFrequency = 0.5;
+  constexpr double MaxFrequency = 150000.0;
+  constexpr uint8_t MaxPwmResolution = 20;
+  constexpr uint32_t LedcClockHz = 80000000;
+  constexpr uint8_t LedPin = 2;
 
   const uint8_t OutputPins[] = {
       4, 5, 13, 14, 16, 17, 18, 19,
       21, 22, 23, 25, 26, 27, 32, 33};
   constexpr size_t ChannelCount = sizeof(OutputPins) / sizeof(OutputPins[0]);
 
-  uint32_t frequency = 10;
+  double frequency = 0.5;
   uint8_t dutyPercent = 50;
+  uint8_t pwmResolution = 8;
+  double actualFrequency = 0;
+  bool slowMode = false;
+  bool slowOutputState = false;
+  uint32_t lastSlowToggle = 0;
+  bool ledcAttached = false;
+
+  uint8_t selectResolution()
+  {
+    uint8_t resolution = MaxPwmResolution;
+
+    while (resolution > 1 &&
+           frequency * (1ULL << resolution) > LedcClockHz)
+      --resolution;
+
+    return resolution;
+  }
 
   void applyPwm()
   {
-    const uint32_t duty = (static_cast<uint32_t>(dutyPercent) * MaxDuty) / 100;
+    slowMode = frequency < 1.0;
+
+    if (slowMode)
+    {
+      if (ledcAttached)
+      {
+        for (const uint8_t pin : OutputPins)
+          ledcDetachPin(pin);
+        ledcDetachPin(LedPin);
+        ledcAttached = false;
+      }
+
+      for (const uint8_t pin : OutputPins)
+        pinMode(pin, OUTPUT);
+      pinMode(LedPin, OUTPUT);
+
+      slowOutputState = false;
+      lastSlowToggle = millis();
+      for (const uint8_t pin : OutputPins)
+        digitalWrite(pin, LOW);
+      digitalWrite(LedPin, LOW);
+      actualFrequency = frequency;
+      return;
+    }
+
+    pwmResolution = selectResolution();
+    const uint32_t maxDuty = (1UL << pwmResolution) - 1;
+    const uint32_t duty = (static_cast<uint32_t>(dutyPercent) * maxDuty) / 100;
 
     for (uint8_t channel = 0; channel < ChannelCount; ++channel)
     {
-      ledcSetup(channel, frequency, PwmResolution);
+      ledcAttachPin(OutputPins[channel], channel);
+      const double configuredFrequency = ledcSetup(channel, frequency, pwmResolution);
+      if (channel == 0)
+        actualFrequency = configuredFrequency;
       ledcWrite(channel, duty);
     }
+    ledcAttachPin(LedPin, 0);
+    ledcAttached = true;
+  }
+
+  void updateSlowPwm()
+  {
+    if (!slowMode)
+      return;
+
+    const uint32_t halfPeriod = static_cast<uint32_t>(500.0 / frequency);
+    if (millis() - lastSlowToggle < halfPeriod)
+      return;
+
+    lastSlowToggle = millis();
+    slowOutputState = !slowOutputState;
+    const uint8_t level = slowOutputState ? HIGH : LOW;
+
+    for (const uint8_t pin : OutputPins)
+      digitalWrite(pin, level);
+    digitalWrite(LedPin, level);
   }
 
   void printStatus()
   {
-    Serial.printf("Frequencia: %lu Hz | Duty: %u%% | Canais: %u\n",
-                  static_cast<unsigned long>(frequency), dutyPercent,
-                  static_cast<unsigned>(ChannelCount));
+    Serial.printf("Frequencia: %.3f Hz (real: %.3f Hz) | Duty: %u%% | Canais: %u\n",
+                  frequency, actualFrequency,
+                  dutyPercent, static_cast<unsigned>(ChannelCount));
   }
 
   void printHelp()
   {
     Serial.println("Comandos:");
-    Serial.println("  F<Hz>   frequencia de 1 a 150000 Hz (ex.: F150000)");
+    Serial.println("  F<Hz>   frequencia de 0.5 a 150000 Hz (ex.: F150000 ou F0.5)");
     Serial.println("  D<%>    duty cycle de 0 a 100 (ex.: D50)");
     Serial.println("  S       mostrar configuracao atual");
   }
@@ -62,12 +130,11 @@ namespace
       return;
 
     const char command = static_cast<char>(toupper(Serial.read()));
-    const long value = Serial.parseInt();
+    const double value = Serial.parseFloat();
 
-    if (command == 'F' && value >= static_cast<long>(MinFrequency) &&
-        value <= static_cast<long>(MaxFrequency))
+    if (command == 'F' && value >= MinFrequency && value <= MaxFrequency)
     {
-      frequency = static_cast<uint32_t>(value);
+      frequency = value;
       applyPwm();
       printStatus();
     }
@@ -96,9 +163,6 @@ void setup()
 {
   Serial.begin(115200);
 
-  for (uint8_t channel = 0; channel < ChannelCount; ++channel)
-    ledcAttachPin(OutputPins[channel], channel);
-
   applyPwm();
   Serial.println("Gerador PWM ESP32 pronto: 16 canais, nivel de 3,3 V.");
   printStatus();
@@ -107,5 +171,6 @@ void setup()
 
 void loop()
 {
+  updateSlowPwm();
   handleCommand();
 }
