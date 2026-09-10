@@ -10,6 +10,7 @@ namespace Config
     constexpr uint8_t DefaultDutyPercent = 50;
 
     constexpr uint8_t LedPin = 2;
+    constexpr double LedIndicatorMaxFrequencyHz = 2.0;
     constexpr uint8_t MaxPwmResolution = 20;
     constexpr uint32_t LedcClockHz = 80000000;
 

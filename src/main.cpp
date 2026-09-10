@@ -3,10 +3,12 @@
 
 #include "config.h"
 #include "pwm_generator.h"
+#include "retentive_storage.h"
 
 namespace
 {
   PwmGenerator pwm;
+  RetentiveStorage storage;
 
   void printStatus()
   {
@@ -25,21 +27,29 @@ namespace
 
   void handleCommand()
   {
+    while (Serial.available() && isspace(Serial.peek()))
+      Serial.read();
+
     if (!Serial.available())
       return;
 
     const char command = static_cast<char>(toupper(Serial.read()));
-    const double value = Serial.parseFloat();
+    double value = 0;
+
+    if (command == 'F' || command == 'D')
+      value = Serial.parseFloat();
 
     if (command == 'F' && value >= Config::MinFrequencyHz &&
         value <= Config::MaxFrequencyHz)
     {
       pwm.setFrequency(value);
+      storage.save({pwm.frequency(), pwm.duty()});
       printStatus();
     }
     else if (command == 'D' && value >= 0 && value <= 100)
     {
       pwm.setDuty(static_cast<uint8_t>(value));
+      storage.save({pwm.frequency(), pwm.duty()});
       printStatus();
     }
     else if (command == 'S')
@@ -61,8 +71,13 @@ void setup()
 {
   Serial.begin(115200);
 
-  pwm.setFrequency(Config::DefaultFrequencyHz);
-  pwm.setDuty(Config::DefaultDutyPercent);
+  RetentiveSettings settings{
+      Config::DefaultFrequencyHz, Config::DefaultDutyPercent};
+  storage.begin();
+  storage.load(settings);
+
+  pwm.setFrequency(settings.frequencyHz);
+  pwm.setDuty(settings.dutyPercent);
   pwm.begin();
   Serial.println("Gerador PWM ESP32 pronto: 16 canais, nivel de 3,3 V.");
   printStatus();
