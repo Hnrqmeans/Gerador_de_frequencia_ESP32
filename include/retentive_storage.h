@@ -2,10 +2,12 @@
 
 #include <Arduino.h>
 
+#include "config.h"
+
 struct RetentiveSettings
 {
-    double frequencyHz;
-    uint8_t dutyPercent;
+    double frequencyHz[Config::ChannelCount];
+    uint8_t dutyPercent[Config::ChannelCount];
 };
 
 class RetentiveStorage
