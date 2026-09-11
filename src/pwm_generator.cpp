@@ -16,39 +16,77 @@ void PwmGenerator::update()
 
 void PwmGenerator::setFrequency(double frequencyHz)
 {
-    frequencyHz_ = frequencyHz;
+    for (uint8_t channel = 0; channel < Config::ChannelCount; ++channel)
+        frequencyHz_[channel] = frequencyHz;
+
+    if (initialized_)
+        apply();
+}
+
+void PwmGenerator::setFrequency(uint8_t channel, double frequencyHz)
+{
+    if (channel >= Config::ChannelCount)
+        return;
+
+    frequencyHz_[channel] = frequencyHz;
     if (initialized_)
         apply();
 }
 
 void PwmGenerator::setDuty(uint8_t dutyPercent)
 {
-    dutyPercent_ = dutyPercent;
+    for (uint8_t channel = 0; channel < Config::ChannelCount; ++channel)
+        dutyPercent_[channel] = dutyPercent;
+
+    if (initialized_)
+        apply();
+}
+
+void PwmGenerator::setDuty(uint8_t channel, uint8_t dutyPercent)
+{
+    if (channel >= Config::ChannelCount)
+        return;
+
+    dutyPercent_[channel] = dutyPercent;
     if (initialized_)
         apply();
 }
 
 double PwmGenerator::frequency() const
 {
-    return frequencyHz_;
+    return frequency(0);
+}
+
+double PwmGenerator::frequency(uint8_t channel) const
+{
+    return channel < Config::ChannelCount ? frequencyHz_[channel] : 0.0;
 }
 
 double PwmGenerator::actualFrequency() const
 {
-    return actualFrequencyHz_;
+    return actualFrequencyHz_[0];
 }
 
 uint8_t PwmGenerator::duty() const
 {
-    return dutyPercent_;
+    return duty(0);
+}
+
+uint8_t PwmGenerator::duty(uint8_t channel) const
+{
+    return channel < Config::ChannelCount ? dutyPercent_[channel] : 0;
 }
 
 uint8_t PwmGenerator::selectResolution() const
 {
     uint8_t resolution = Config::MaxPwmResolution;
+    double highestFrequency = 0.0;
+
+    for (uint8_t channel = 0; channel < Config::ChannelCount; ++channel)
+        highestFrequency = max(highestFrequency, frequencyHz_[channel]);
 
     while (resolution > 1 &&
-           frequencyHz_ * (1ULL << resolution) > Config::LedcClockHz)
+           highestFrequency * (1ULL << resolution) > Config::LedcClockHz)
         --resolution;
 
     return resolution;
@@ -56,79 +94,80 @@ uint8_t PwmGenerator::selectResolution() const
 
 void PwmGenerator::apply()
 {
-    slowMode_ = frequencyHz_ < 1.0;
-
-    if (slowMode_)
-    {
-        applySlowPwm();
-        return;
-    }
-
+    applySlowPwm();
     applyHardwarePwm();
 }
 
 void PwmGenerator::applySlowPwm()
 {
-    if (ledcAttached_)
+    for (uint8_t channel = 0; channel < Config::ChannelCount; ++channel)
     {
-        for (const uint8_t pin : Config::OutputPins)
-            ledcDetachPin(pin);
-        ledcAttached_ = false;
+        if (frequencyHz_[channel] >= 1.0)
+            continue;
+
+        if (ledcAttached_[channel])
+        {
+            ledcDetachPin(Config::OutputPins[channel]);
+            ledcAttached_[channel] = false;
+        }
+
+        pinMode(Config::OutputPins[channel], OUTPUT);
+        slowMode_[channel] = true;
+        actualFrequencyHz_[channel] = frequencyHz_[channel];
+        slowCycleStartMs_[channel] = millis();
+        writeSlowOutput(channel, LOW);
     }
 
-    for (const uint8_t pin : Config::OutputPins)
-        pinMode(pin, OUTPUT);
     pinMode(Config::LedPin, OUTPUT);
-
-    actualFrequencyHz_ = frequencyHz_;
-    slowCycleStartMs_ = millis();
-    writeSlowOutput(LOW);
     resetLedIndicator();
 }
 
 void PwmGenerator::applyHardwarePwm()
 {
     pwmResolution_ = selectResolution();
-    const uint32_t hardwareFrequency = static_cast<uint32_t>(frequencyHz_ + 0.5);
-    const uint32_t maxDuty = (1UL << pwmResolution_) - 1;
-    const uint32_t duty = (static_cast<uint32_t>(dutyPercent_) * maxDuty) / 100;
-
     for (uint8_t channel = 0; channel < Config::ChannelCount; ++channel)
     {
+        if (frequencyHz_[channel] < 1.0)
+            continue;
+
+        const uint32_t hardwareFrequency = static_cast<uint32_t>(frequencyHz_[channel] + 0.5);
+        const uint32_t maxDuty = (1UL << pwmResolution_) - 1;
+        const uint32_t duty = (static_cast<uint32_t>(dutyPercent_[channel]) * maxDuty) / 100;
+
+        slowMode_[channel] = false;
         ledcSetup(channel, hardwareFrequency, pwmResolution_);
         ledcAttachPin(Config::OutputPins[channel], channel);
         ledcWrite(channel, duty);
-
-        if (channel == 0)
-            actualFrequencyHz_ = hardwareFrequency;
+        actualFrequencyHz_[channel] = hardwareFrequency;
+        ledcAttached_[channel] = true;
     }
 
-    ledcAttached_ = true;
     pinMode(Config::LedPin, OUTPUT);
     resetLedIndicator();
 }
 
 void PwmGenerator::updateSlowPwm()
 {
-    if (!slowMode_)
-        return;
+    for (uint8_t channel = 0; channel < Config::ChannelCount; ++channel)
+    {
+        if (!slowMode_[channel])
+            continue;
 
-    const uint32_t periodMs = static_cast<uint32_t>(1000.0 / frequencyHz_);
-    const uint32_t highTimeMs = (periodMs * dutyPercent_) / 100;
-    const uint32_t elapsedMs = millis() - slowCycleStartMs_;
-    const uint32_t phaseMs = elapsedMs % periodMs;
-    const uint8_t level = phaseMs < highTimeMs ? HIGH : LOW;
+        const uint32_t periodMs = static_cast<uint32_t>(1000.0 / frequencyHz_[channel]);
+        const uint32_t highTimeMs = (periodMs * dutyPercent_[channel]) / 100;
+        const uint32_t elapsedMs = millis() - slowCycleStartMs_[channel];
+        const uint32_t phaseMs = elapsedMs % periodMs;
+        const uint8_t level = phaseMs < highTimeMs ? HIGH : LOW;
 
-    if (level != slowOutputState_)
-        writeSlowOutput(level);
+        if (level != slowOutputState_[channel])
+            writeSlowOutput(channel, level);
+    }
 }
 
-void PwmGenerator::writeSlowOutput(uint8_t level)
+void PwmGenerator::writeSlowOutput(uint8_t channel, uint8_t level)
 {
-    slowOutputState_ = level;
-
-    for (const uint8_t pin : Config::OutputPins)
-        digitalWrite(pin, level);
+    slowOutputState_[channel] = level;
+    digitalWrite(Config::OutputPins[channel], level);
 }
 
 void PwmGenerator::resetLedIndicator()
@@ -140,8 +179,10 @@ void PwmGenerator::resetLedIndicator()
 
 void PwmGenerator::updateLedIndicator()
 {
-    const double indicatorFrequency = min(
-        frequencyHz_, Config::LedIndicatorMaxFrequencyHz);
+    double indicatorFrequency = Config::MinFrequencyHz;
+    for (uint8_t channel = 0; channel < Config::ChannelCount; ++channel)
+        indicatorFrequency = max(indicatorFrequency,
+                                 min(frequencyHz_[channel], Config::LedIndicatorMaxFrequencyHz));
     const uint32_t periodMs = static_cast<uint32_t>(1000.0 / indicatorFrequency);
     const uint32_t highTimeMs = periodMs / 2;
     const uint32_t phaseMs = (millis() - ledCycleStartMs_) % periodMs;
