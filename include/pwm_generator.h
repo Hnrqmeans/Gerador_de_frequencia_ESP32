@@ -23,12 +23,16 @@ private:
     void applyHardwarePwm();
     void applySlowPwm();
     void updateSlowPwm();
+    void initializeTestProfile();
+    void updateTestProfile();
+    double testProfileFrequency() const;
     void updateLedIndicator();
     void resetLedIndicator();
     uint8_t selectResolution() const;
     void writeSlowOutput(uint8_t channel, uint8_t level);
 
     double frequencyHz_[16] = {};
+    double currentFrequencyHz_[16] = {};
     double actualFrequencyHz_[16] = {};
     uint8_t dutyPercent_[16] = {};
     uint8_t pwmResolution_ = 8;
@@ -36,6 +40,8 @@ private:
     bool ledcAttached_[16] = {};
     uint8_t slowOutputState_[16] = {};
     uint32_t slowCycleStartMs_[16] = {};
+    uint32_t slowNextTransitionUs_[16] = {};
+    uint32_t testProfileUpdateMs_ = 0;
     uint32_t ledCycleStartMs_ = 0;
     uint8_t ledOutputState_ = LOW;
     bool initialized_ = false;

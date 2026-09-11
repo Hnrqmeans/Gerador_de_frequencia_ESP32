@@ -48,6 +48,8 @@ namespace
     Serial.println("  Tambem aceitos: F3=1500 ou F3 1500");
     Serial.println("  FA<Hz>/DA<%>  aplicar explicitamente a todos");
     Serial.println("  S       mostrar configuracao atual");
+    Serial.println("  Modo: altere ConfiguredFrequencyMode em include/config.h");
+    Serial.println("  TestProfile = distribuicao normal em torno de 12 Hz");
   }
 
   void handleCommand()
