@@ -25,13 +25,11 @@ private:
     void updateSlowPwm();
     void initializeTestProfile();
     void updateTestProfile();
-    double testProfileFrequency() const;
     void updateLedIndicator();
     void resetLedIndicator();
-    uint8_t selectResolution() const;
     void writeSlowOutput(uint8_t channel, uint8_t level);
 
-    double frequencyHz_[16] = {};
+    double configuredFrequencyHz_[16] = {};
     double currentFrequencyHz_[16] = {};
     double actualFrequencyHz_[16] = {};
     uint8_t dutyPercent_[16] = {};

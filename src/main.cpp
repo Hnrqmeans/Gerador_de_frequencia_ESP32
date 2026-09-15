@@ -9,18 +9,19 @@
 
 #include <Arduino.h>
 
-#include "config.h"
-#include "pwm_generator.h"
-#include "retentive_storage.h"
+#include "config/config.h"
+#include "pwm/pwm_generator.h"
+#include "eeprom/simulated_eeprom.h"
 
 namespace
 {
   PwmGenerator pwm;
-  RetentiveStorage storage;
+  SimulatedEeprom simulatedEeprom;
 
   void printStatus()
   {
-    for (uint8_t channel = 0; channel < Config::ChannelCount; ++channel)
+    for (uint8_t channel = 0; channel < Config::channelCount; ++channel)
+      // O primeiro canal informa a frequencia realmente aplicada pelo hardware.
       Serial.printf("Canal %u: %.3f Hz (real: %.3f Hz) | Duty: %u%%\n",
                     channel, pwm.frequency(channel),
                     channel == 0 ? pwm.actualFrequency() : pwm.frequency(channel),
@@ -29,13 +30,13 @@ namespace
 
   void saveSettings()
   {
-    RetentiveSettings settings{};
-    for (uint8_t channel = 0; channel < Config::ChannelCount; ++channel)
+    EepromSettings settings{};
+    for (uint8_t channel = 0; channel < Config::channelCount; ++channel)
     {
       settings.frequencyHz[channel] = pwm.frequency(channel);
       settings.dutyPercent[channel] = pwm.duty(channel);
     }
-    storage.save(settings);
+    simulatedEeprom.saveSettings(settings);
   }
 
   void printHelp()
@@ -48,7 +49,7 @@ namespace
     Serial.println("  Tambem aceitos: F3=1500 ou F3 1500");
     Serial.println("  FA<Hz>/DA<%>  aplicar explicitamente a todos");
     Serial.println("  S       mostrar configuracao atual");
-    Serial.println("  Modo: altere ConfiguredFrequencyMode em include/config.h");
+    Serial.println("  Modo: altere Config::configuredFrequencyMode em include/config/config.h");
     Serial.println("  TestProfile = distribuicao normal em torno de 12 Hz");
   }
 
@@ -60,6 +61,7 @@ namespace
     if (!Serial.available())
       return;
 
+    // O primeiro caractere define a operacao; o restante contem o argumento.
     const char command = static_cast<char>(toupper(Serial.read()));
     String argument = Serial.readStringUntil('\n');
     argument.trim();
@@ -71,7 +73,7 @@ namespace
     else if (command == 'F' || command == 'D')
     {
       bool allChannels = true;
-      int channel = -1;
+      int channelIndex = -1;
       String valueText = argument;
       int separator = argument.indexOf(':');
       if (separator < 0)
@@ -82,17 +84,17 @@ namespace
       if (separator >= 0)
       {
         allChannels = false;
-        channel = argument.substring(0, separator).toInt();
+        channelIndex = argument.substring(0, separator).toInt();
         valueText = argument.substring(separator + 1);
       }
       else if (argument.startsWith("A"))
         valueText = argument.substring(1);
 
       const double value = valueText.toFloat();
-      const bool validChannel = channel >= 0 &&
-                                channel < static_cast<int>(Config::ChannelCount);
+      const bool validChannel = channelIndex >= 0 &&
+                                channelIndex < static_cast<int>(Config::channelCount);
       const bool validValue = command == 'F'
-                                  ? value >= Config::MinFrequencyHz && value <= Config::MaxFrequencyHz
+                                  ? value >= Config::minFrequencyHz && value <= Config::maxFrequencyHz
                                   : value >= 0 && value <= 100;
 
       if (validValue && (allChannels || validChannel))
@@ -102,14 +104,14 @@ namespace
           if (allChannels)
             pwm.setFrequency(value);
           else
-            pwm.setFrequency(static_cast<uint8_t>(channel), value);
+            pwm.setFrequency(static_cast<uint8_t>(channelIndex), value);
         }
         else
         {
           if (allChannels)
             pwm.setDuty(static_cast<uint8_t>(value));
           else
-            pwm.setDuty(static_cast<uint8_t>(channel), static_cast<uint8_t>(value));
+            pwm.setDuty(static_cast<uint8_t>(channelIndex), static_cast<uint8_t>(value));
         }
         saveSettings();
         printStatus();
@@ -135,16 +137,16 @@ void setup()
 {
   Serial.begin(115200);
 
-  RetentiveSettings settings{};
-  for (uint8_t channel = 0; channel < Config::ChannelCount; ++channel)
+  EepromSettings settings{};
+  for (uint8_t channel = 0; channel < Config::channelCount; ++channel)
   {
-    settings.frequencyHz[channel] = Config::DefaultFrequencyHz;
-    settings.dutyPercent[channel] = Config::DefaultDutyPercent;
+    settings.frequencyHz[channel] = Config::defaultFrequencyHz;
+    settings.dutyPercent[channel] = Config::defaultDutyPercent;
   }
-  storage.begin();
-  storage.load(settings);
+  simulatedEeprom.begin();
+  simulatedEeprom.loadSettings(settings);
 
-  for (uint8_t channel = 0; channel < Config::ChannelCount; ++channel)
+  for (uint8_t channel = 0; channel < Config::channelCount; ++channel)
   {
     pwm.setFrequency(channel, settings.frequencyHz[channel]);
     pwm.setDuty(channel, settings.dutyPercent[channel]);
