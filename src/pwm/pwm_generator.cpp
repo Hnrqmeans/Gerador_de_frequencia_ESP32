@@ -5,7 +5,7 @@
 
 void PwmGenerator::begin()
 {
-    if (Config::configuredFrequencyMode == Config::FrequencyMode::TestProfile)
+    if (isTestProfileActive())
         initializeTestProfile();
     else
         for (uint8_t channel = 0; channel < Config::channelCount; ++channel)
@@ -27,7 +27,7 @@ void PwmGenerator::setFrequency(double frequencyHz)
     for (uint8_t channel = 0; channel < Config::channelCount; ++channel)
     {
         configuredFrequencyHz_[channel] = frequencyHz;
-        if (Config::configuredFrequencyMode == Config::FrequencyMode::Configurable)
+        if (!isTestProfileActive())
             currentFrequencyHz_[channel] = frequencyHz;
     }
 
@@ -41,7 +41,7 @@ void PwmGenerator::setFrequency(uint8_t channel, double frequencyHz)
         return;
 
     configuredFrequencyHz_[channel] = frequencyHz;
-    if (Config::configuredFrequencyMode == Config::FrequencyMode::Configurable)
+    if (!isTestProfileActive())
         currentFrequencyHz_[channel] = frequencyHz;
     if (initialized_)
         apply();
@@ -66,6 +66,47 @@ void PwmGenerator::setDuty(uint8_t channel, uint8_t dutyPercent)
         apply();
 }
 
+void PwmGenerator::setFrequencyMode(Config::FrequencyMode frequencyMode)
+{
+    if (frequencyMode != Config::FrequencyMode::Configurable &&
+        frequencyMode != Config::FrequencyMode::TestProfile)
+        return;
+
+    frequencyMode_ = frequencyMode;
+    if (initialized_)
+    {
+        if (isTestProfileActive())
+            initializeTestProfile();
+        else
+            for (uint8_t channel = 0; channel < Config::channelCount; ++channel)
+                currentFrequencyHz_[channel] = configuredFrequencyHz_[channel];
+        apply();
+    }
+}
+
+Config::FrequencyMode PwmGenerator::frequencyMode() const
+{
+    return frequencyMode_;
+}
+
+void PwmGenerator::setTestProfileSettings(const TestProfileSettings &settings)
+{
+    if (settings.meanFrequencyHz < Config::minFrequencyHz ||
+        settings.meanFrequencyHz > Config::maxFrequencyHz ||
+        settings.sigmaHz < 0.0 ||
+        settings.updateIntervalMs < Config::minTestProfileUpdateIntervalMs)
+        return;
+
+    testProfileSettings_ = settings;
+    if (initialized_ && isTestProfileActive())
+        apply();
+}
+
+TestProfileSettings PwmGenerator::testProfileSettings() const
+{
+    return testProfileSettings_;
+}
+
 double PwmGenerator::frequency() const
 {
     return frequency(0);
@@ -74,6 +115,11 @@ double PwmGenerator::frequency() const
 double PwmGenerator::frequency(uint8_t channel) const
 {
     return channel < Config::channelCount ? currentFrequencyHz_[channel] : 0.0;
+}
+
+double PwmGenerator::configuredFrequency(uint8_t channel) const
+{
+    return channel < Config::channelCount ? configuredFrequencyHz_[channel] : 0.0;
 }
 
 double PwmGenerator::actualFrequency() const
@@ -101,7 +147,7 @@ void PwmGenerator::applySlowPwm()
 {
     for (uint8_t channel = 0; channel < Config::channelCount; ++channel)
     {
-        const bool useSoftwarePwm = Config::configuredFrequencyMode == Config::FrequencyMode::TestProfile ||
+        const bool useSoftwarePwm = isTestProfileActive() ||
                                     currentFrequencyHz_[channel] < 1.0;
         if (!useSoftwarePwm)
             continue;
@@ -118,7 +164,9 @@ void PwmGenerator::applySlowPwm()
         slowCycleStartMs_[channel] = millis();
         writeSlowOutput(channel, LOW);
         slowNextTransitionUs_[channel] = micros() +
-                                         static_cast<uint32_t>(1000000.0 / currentFrequencyHz_[channel]);
+                                         (currentFrequencyHz_[channel] > 0.0
+                                              ? static_cast<uint32_t>(1000000.0 / currentFrequencyHz_[channel])
+                                              : 1);
     }
 
     pinMode(Config::ledPin, OUTPUT);
@@ -127,7 +175,7 @@ void PwmGenerator::applySlowPwm()
 
 void PwmGenerator::applyHardwarePwm()
 {
-    if (Config::configuredFrequencyMode == Config::FrequencyMode::TestProfile)
+    if (isTestProfileActive())
         return;
 
     pwmResolution_ = PwmCalculations::selectPwmResolution(
@@ -187,18 +235,18 @@ void PwmGenerator::initializeTestProfile()
 {
     randomSeed(micros());
     for (uint8_t channel = 0; channel < Config::channelCount; ++channel)
-        currentFrequencyHz_[channel] = Config::testProfileMeanFrequencyHz;
+        currentFrequencyHz_[channel] = testProfileSettings_.meanFrequencyHz;
 
     testProfileUpdateMs_ = millis();
 }
 
 void PwmGenerator::updateTestProfile()
 {
-    if (!initialized_ || Config::configuredFrequencyMode != Config::FrequencyMode::TestProfile)
+    if (!initialized_ || !isTestProfileActive())
         return;
 
     const uint32_t nowMs = millis();
-    if (nowMs - testProfileUpdateMs_ < Config::testProfileUpdateIntervalMs)
+    if (nowMs - testProfileUpdateMs_ < testProfileSettings_.updateIntervalMs)
         return;
 
     testProfileUpdateMs_ = nowMs;
@@ -207,7 +255,7 @@ void PwmGenerator::updateTestProfile()
         const double uniformValueA = static_cast<double>(random(1L, 1000000L)) / 1000000.0;
         const double uniformValueB = static_cast<double>(random(1L, 1000000L)) / 1000000.0;
         currentFrequencyHz_[channel] = PwmCalculations::calculateNormalDistributionFrequency(
-            Config::testProfileMeanFrequencyHz, Config::testProfileSigmaHz,
+            testProfileSettings_.meanFrequencyHz, testProfileSettings_.sigmaHz,
             uniformValueA, uniformValueB);
         actualFrequencyHz_[channel] = currentFrequencyHz_[channel];
     }
@@ -242,4 +290,9 @@ void PwmGenerator::updateLedIndicator()
 
     ledOutputState_ = level;
     digitalWrite(Config::ledPin, level);
+}
+
+bool PwmGenerator::isTestProfileActive() const
+{
+    return frequencyMode_ == Config::FrequencyMode::TestProfile;
 }

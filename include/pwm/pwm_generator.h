@@ -2,6 +2,15 @@
 
 #include <Arduino.h>
 
+#include "config/config.h"
+
+struct TestProfileSettings
+{
+    double meanFrequencyHz;
+    double sigmaHz;
+    uint32_t updateIntervalMs;
+};
+
 class PwmGenerator
 {
 public:
@@ -11,9 +20,14 @@ public:
     void setFrequency(uint8_t channel, double frequencyHz);
     void setDuty(uint8_t dutyPercent);
     void setDuty(uint8_t channel, uint8_t dutyPercent);
+    void setFrequencyMode(Config::FrequencyMode frequencyMode);
+    Config::FrequencyMode frequencyMode() const;
+    void setTestProfileSettings(const TestProfileSettings &settings);
+    TestProfileSettings testProfileSettings() const;
 
     double frequency() const;
     double frequency(uint8_t channel) const;
+    double configuredFrequency(uint8_t channel) const;
     double actualFrequency() const;
     uint8_t duty() const;
     uint8_t duty(uint8_t channel) const;
@@ -28,11 +42,17 @@ private:
     void updateLedIndicator();
     void resetLedIndicator();
     void writeSlowOutput(uint8_t channel, uint8_t level);
+    bool isTestProfileActive() const;
 
     double configuredFrequencyHz_[16] = {};
     double currentFrequencyHz_[16] = {};
     double actualFrequencyHz_[16] = {};
     uint8_t dutyPercent_[16] = {};
+    Config::FrequencyMode frequencyMode_ = Config::defaultFrequencyMode;
+    TestProfileSettings testProfileSettings_{
+        Config::testProfileMeanFrequencyHz,
+        Config::testProfileSigmaHz,
+        Config::testProfileUpdateIntervalMs};
     uint8_t pwmResolution_ = 8;
     bool slowMode_[16] = {};
     bool ledcAttached_[16] = {};
