@@ -9,33 +9,51 @@
 
 #include <Arduino.h>
 
-#include "config.h"
-#include "pwm_generator.h"
-#include "retentive_storage.h"
+#include "config/config.h"
+#include "pwm/pwm_generator.h"
+#include "eeprom/simulated_eeprom.h"
 
 namespace
 {
   PwmGenerator pwm;
-  RetentiveStorage storage;
+  SimulatedEeprom simulatedEeprom;
+  bool settingsDirty = false;
 
   void printStatus()
   {
-    for (uint8_t channel = 0; channel < Config::ChannelCount; ++channel)
+    Serial.printf("Modo: %s\n", pwm.frequencyMode() == Config::FrequencyMode::Configurable
+                                    ? "Configurable"
+                                    : "TestProfile");
+    const TestProfileSettings profileSettings = pwm.testProfileSettings();
+    Serial.printf("Perfil: media %.3f Hz | sigma %.3f Hz | intervalo %lu ms\n",
+                  profileSettings.meanFrequencyHz, profileSettings.sigmaHz,
+                  static_cast<unsigned long>(profileSettings.updateIntervalMs));
+    Serial.printf("Alteracoes pendentes: %s\n", settingsDirty ? "SIM" : "NAO");
+    for (uint8_t channel = 0; channel < Config::channelCount; ++channel)
+      // O primeiro canal informa a frequencia realmente aplicada pelo hardware.
       Serial.printf("Canal %u: %.3f Hz (real: %.3f Hz) | Duty: %u%%\n",
                     channel, pwm.frequency(channel),
                     channel == 0 ? pwm.actualFrequency() : pwm.frequency(channel),
                     pwm.duty(channel));
   }
 
-  void saveSettings()
+  bool saveSettings()
   {
-    RetentiveSettings settings{};
-    for (uint8_t channel = 0; channel < Config::ChannelCount; ++channel)
+    EepromSettings settings{};
+    for (uint8_t channel = 0; channel < Config::channelCount; ++channel)
     {
-      settings.frequencyHz[channel] = pwm.frequency(channel);
+      settings.frequencyHz[channel] = pwm.configuredFrequency(channel);
       settings.dutyPercent[channel] = pwm.duty(channel);
     }
-    storage.save(settings);
+    settings.frequencyMode = static_cast<uint8_t>(pwm.frequencyMode());
+    const TestProfileSettings profileSettings = pwm.testProfileSettings();
+    settings.testProfileMeanFrequencyHz = profileSettings.meanFrequencyHz;
+    settings.testProfileSigmaHz = profileSettings.sigmaHz;
+    settings.testProfileUpdateIntervalMs = profileSettings.updateIntervalMs;
+    const bool savedSuccessfully = simulatedEeprom.saveSettings(settings);
+    if (savedSuccessfully)
+      settingsDirty = false;
+    return savedSuccessfully;
   }
 
   void printHelp()
@@ -45,11 +63,12 @@ namespace
     Serial.println("  D<%>    duty em todos os canais (ex.: D50)");
     Serial.println("  F<n>:<Hz>  frequencia do canal n (ex.: F3:1500)");
     Serial.println("  D<n>:<%>   duty do canal n (ex.: D3:25)");
-    Serial.println("  Tambem aceitos: F3=1500 ou F3 1500");
-    Serial.println("  FA<Hz>/DA<%>  aplicar explicitamente a todos");
+    Serial.println("  M1       modo configuravel");
+    Serial.println("  M2       modo perfil de teste");
+    Serial.println("  P<media>:<sigma>:<intervalo> (ex.: P12:3:500)");
     Serial.println("  S       mostrar configuracao atual");
-    Serial.println("  Modo: altere ConfiguredFrequencyMode em include/config.h");
-    Serial.println("  TestProfile = distribuicao normal em torno de 12 Hz");
+    Serial.println("  SAVE    salvar alteracoes na EEPROM simulada");
+    Serial.println("  F no TestProfile atualiza a frequencia manual pendente para o proximo M1");
   }
 
   void handleCommand()
@@ -60,18 +79,94 @@ namespace
     if (!Serial.available())
       return;
 
-    const char command = static_cast<char>(toupper(Serial.read()));
-    String argument = Serial.readStringUntil('\n');
+    String commandLine = Serial.readStringUntil('\n');
+    commandLine.trim();
+    commandLine.toUpperCase();
+    if (commandLine.isEmpty())
+      return;
+
+    // SAVE precisa ser a linha inteira para evitar gravacoes acidentais.
+    if (commandLine == "SAVE")
+    {
+      if (!settingsDirty)
+      {
+        Serial.println("Nenhuma alteracao pendente para salvar.");
+      }
+      else if (saveSettings())
+      {
+        Serial.println("Alteracoes salvas na EEPROM simulada.");
+      }
+      else
+      {
+        Serial.println("Falha ao salvar na EEPROM simulada.");
+      }
+      printStatus();
+      return;
+    }
+
+    // O primeiro caractere define a operacao; o restante contem o argumento.
+    const char command = commandLine.charAt(0);
+    String argument = commandLine.substring(1);
     argument.trim();
 
     if (command == 'S')
     {
       printStatus();
     }
+    else if (command == 'M')
+    {
+      const int modeValue = argument.toInt();
+      if (modeValue == 1 || modeValue == 2)
+      {
+        pwm.setFrequencyMode(modeValue == 1
+                                 ? Config::FrequencyMode::Configurable
+                                 : Config::FrequencyMode::TestProfile);
+        settingsDirty = true;
+        printStatus();
+      }
+      else
+      {
+        Serial.println("Modo invalido. Use M1 ou M2.");
+      }
+    }
+    else if (command == 'P')
+    {
+      const int firstSeparator = argument.indexOf(':');
+      const int secondSeparator = argument.indexOf(':', firstSeparator + 1);
+      if (firstSeparator > 0 && secondSeparator > firstSeparator)
+      {
+        TestProfileSettings profileSettings = pwm.testProfileSettings();
+        profileSettings.meanFrequencyHz = argument.substring(0, firstSeparator).toFloat();
+        profileSettings.sigmaHz = argument.substring(
+                                              firstSeparator + 1, secondSeparator)
+                                      .toFloat();
+        profileSettings.updateIntervalMs = static_cast<uint32_t>(argument.substring(
+                                                                             secondSeparator + 1)
+                                                                     .toInt());
+        const bool validProfile = profileSettings.meanFrequencyHz >= Config::minFrequencyHz &&
+                                  profileSettings.meanFrequencyHz <= Config::maxFrequencyHz &&
+                                  profileSettings.sigmaHz >= 0.0 &&
+                                  profileSettings.updateIntervalMs >= Config::minTestProfileUpdateIntervalMs;
+        if (validProfile)
+        {
+          pwm.setTestProfileSettings(profileSettings);
+          settingsDirty = true;
+          printStatus();
+        }
+        else
+        {
+          Serial.println("Perfil invalido. Verifique media, sigma e intervalo.");
+        }
+      }
+      else
+      {
+        Serial.println("Perfil invalido. Use P<media>:<sigma>:<intervalo>.");
+      }
+    }
     else if (command == 'F' || command == 'D')
     {
       bool allChannels = true;
-      int channel = -1;
+      int channelIndex = -1;
       String valueText = argument;
       int separator = argument.indexOf(':');
       if (separator < 0)
@@ -82,17 +177,14 @@ namespace
       if (separator >= 0)
       {
         allChannels = false;
-        channel = argument.substring(0, separator).toInt();
+        channelIndex = argument.substring(0, separator).toInt();
         valueText = argument.substring(separator + 1);
       }
-      else if (argument.startsWith("A"))
-        valueText = argument.substring(1);
-
       const double value = valueText.toFloat();
-      const bool validChannel = channel >= 0 &&
-                                channel < static_cast<int>(Config::ChannelCount);
+      const bool validChannel = channelIndex >= 0 &&
+                                channelIndex < static_cast<int>(Config::channelCount);
       const bool validValue = command == 'F'
-                                  ? value >= Config::MinFrequencyHz && value <= Config::MaxFrequencyHz
+                                  ? value >= Config::minFrequencyHz && value <= Config::maxFrequencyHz
                                   : value >= 0 && value <= 100;
 
       if (validValue && (allChannels || validChannel))
@@ -102,16 +194,16 @@ namespace
           if (allChannels)
             pwm.setFrequency(value);
           else
-            pwm.setFrequency(static_cast<uint8_t>(channel), value);
+            pwm.setFrequency(static_cast<uint8_t>(channelIndex), value);
         }
         else
         {
           if (allChannels)
             pwm.setDuty(static_cast<uint8_t>(value));
           else
-            pwm.setDuty(static_cast<uint8_t>(channel), static_cast<uint8_t>(value));
+            pwm.setDuty(static_cast<uint8_t>(channelIndex), static_cast<uint8_t>(value));
         }
-        saveSettings();
+        settingsDirty = true;
         printStatus();
       }
       else
@@ -135,16 +227,23 @@ void setup()
 {
   Serial.begin(115200);
 
-  RetentiveSettings settings{};
-  for (uint8_t channel = 0; channel < Config::ChannelCount; ++channel)
+  EepromSettings settings{};
+  for (uint8_t channel = 0; channel < Config::channelCount; ++channel)
   {
-    settings.frequencyHz[channel] = Config::DefaultFrequencyHz;
-    settings.dutyPercent[channel] = Config::DefaultDutyPercent;
+    settings.frequencyHz[channel] = Config::defaultFrequencyHz;
+    settings.dutyPercent[channel] = Config::defaultDutyPercent;
   }
-  storage.begin();
-  storage.load(settings);
+  simulatedEeprom.begin();
+  simulatedEeprom.loadSettings(settings);
 
-  for (uint8_t channel = 0; channel < Config::ChannelCount; ++channel)
+  pwm.setTestProfileSettings({settings.testProfileMeanFrequencyHz,
+                              settings.testProfileSigmaHz,
+                              settings.testProfileUpdateIntervalMs});
+  pwm.setFrequencyMode(settings.frequencyMode == static_cast<uint8_t>(Config::FrequencyMode::TestProfile)
+                           ? Config::FrequencyMode::TestProfile
+                           : Config::FrequencyMode::Configurable);
+
+  for (uint8_t channel = 0; channel < Config::channelCount; ++channel)
   {
     pwm.setFrequency(channel, settings.frequencyHz[channel]);
     pwm.setDuty(channel, settings.dutyPercent[channel]);
